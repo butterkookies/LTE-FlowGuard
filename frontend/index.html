@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlowGuard+ Dashboard — Real-Time Water Monitoring</title>
+    <meta name="description"
+        content="FlowGuard+ real-time water monitoring and leak detection dashboard. Monitor flow rates, detect leaks, and control shutoff valves.">
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <!-- Toast container -->
+    <div id="toast-container"></div>
+
+    <div class="container">
+        <header>
+            <div class="header-top">
+                <div class="logo-group">
+                    <div class="logo-icon">💧</div>
+                    <div>
+                        <h1>FlowGuard<span class="accent">+</span></h1>
+                        <p>Real-Time Water Monitoring & Leak Detection</p>
+                    </div>
+                </div>
+                <div class="connection-status" id="connection-status">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Connecting...</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="summary-cards">
+            <div class="card card-usage" id="total-usage-card">
+                <div class="card-icon">🌊</div>
+                <div class="card-content">
+                    <h3>Total Usage</h3>
+                    <p class="value" id="total-usage">0.000 L</p>
+                </div>
+            </div>
+            <div class="card card-devices" id="active-devices-card">
+                <div class="card-icon">📡</div>
+                <div class="card-content">
+                    <h3>Active Devices</h3>
+                    <p class="value" id="active-devices">0</p>
+                </div>
+            </div>
+            <div class="card card-leaks" id="active-leaks-card">
+                <div class="card-icon">⚠️</div>
+                <div class="card-content">
+                    <h3>Active Leaks</h3>
+                    <p class="value" id="active-leaks">0</p>
+                </div>
+            </div>
+            <div class="card card-loss" id="total-loss-card">
+                <div class="card-icon">💔</div>
+                <div class="card-content">
+                    <h3>Est. Water Loss</h3>
+                    <p class="value" id="total-loss">0.00 L</p>
+                </div>
+            </div>
+        </div>
+
+        <section class="device-list">
+            <div class="section-header">
+                <h2>Monitored Locations</h2>
+                <span class="badge" id="device-count">0 devices</span>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Location</th>
+                        <th>Status</th>
+                        <th>Flow Rate</th>
+                        <th>Consumption</th>
+                        <th>Water Loss</th>
+                        <th>Valve</th>
+                        <th>Control</th>
+                    </tr>
+                </thead>
+                <tbody id="device-table-body">
+                    <tr class="empty-row">
+                        <td colspan="7">Waiting for device data...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+    </div>
+
+    <!-- Detail panel (slide-in from right) -->
+    <div class="detail-overlay" id="detail-overlay"></div>
+    <div class="detail-panel" id="detail-panel">
+        <div class="detail-header">
+            <h2 id="detail-device-name">Device Details</h2>
+            <button class="detail-close" id="detail-close">&times;</button>
+        </div>
+        <div class="detail-body">
+            <div class="detail-cards">
+                <div class="detail-card">
+                    <h4>Current Flow</h4>
+                    <p class="detail-value" id="detail-flow">0.00 L/min</p>
+                </div>
+                <div class="detail-card">
+                    <h4>Total Usage</h4>
+                    <p class="detail-value" id="detail-usage">0.000 L</p>
+                </div>
+                <div class="detail-card">
+                    <h4>Status</h4>
+                    <p class="detail-value" id="detail-status">—</p>
+                </div>
+                <div class="detail-card">
+                    <h4>Water Loss</h4>
+                    <p class="detail-value" id="detail-loss">0.00 L</p>
+                </div>
+            </div>
+            <div id="detail-valve-section" class="detail-valve-section">
+                <!-- Valve control button injected by JS -->
+            </div>
+            <div class="detail-section">
+                <h3>Recent History</h3>
+                <div class="history-list" id="detail-history">
+                    <p class="empty-history">No history available</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
