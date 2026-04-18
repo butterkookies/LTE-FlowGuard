@@ -132,7 +132,7 @@ app.post('/api/command', (req, res) => {
 
     // ── Set server-side valve override ──
     if (command === 'VALVE_CLOSE') {
-        valveOverrides[device_id] = { valve_open: false, leak_status: true };
+        valveOverrides[device_id] = { valve_open: false };
     } else if (command === 'VALVE_OPEN' || command === 'RESET_LEAK') {
         valveOverrides[device_id] = { valve_open: true, leak_status: false };
     }

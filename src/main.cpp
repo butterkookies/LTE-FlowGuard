@@ -135,7 +135,12 @@ void setup() {
   Serial.println("[TEST] LED blink test complete.");
 
   // Initialize Servo and self-test
-  shutoffValve.attach(SERVO_PIN);
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
+  shutoffValve.setPeriodHertz(50);
+  shutoffValve.attach(SERVO_PIN, 500, 2400);
   Serial.println("[TEST] Starting servo sweep test...");
   shutoffValve.write(90); // Close
   delay(500);
