@@ -4,22 +4,10 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 
-// WiFi Configuration (Wokwi Default)
-const char *ssid = "Wokwi-GUEST";
-const char *password = "";
-const char *serverUrl = "http://host.wokwi.internal:3000/api/data";
+#include "config.h"
 
-// Pins
-const int FLOW_SENSOR_PIN = 34; // Potentiometer simulates flow pulses
-const int SERVO_PIN = 13;       // Servo motor
-const int LED_PIN = 2;          // Built-in LED heartbeat
-const int LED_EXT_PIN = 15;     // External red LED heartbeat
-
-// Settings
-const char *DEVICE_ID = "kitchen-sink-01";
-const float CALIBRATION_FACTOR = 7.5;
-const int LEAK_THRESHOLD_SECONDS = 10;
-const int REPORT_INTERVAL_MS = 2000;
+// Leak types
+enum LeakType { LEAK_NONE, LEAK_BURST, LEAK_PROLONGED, LEAK_CLOSED_VALVE };
 
 // Variables
 volatile long pulseCount = 0;
@@ -29,8 +17,9 @@ unsigned long lastMillis = 0;
 unsigned long lastReportMillis = 0;
 unsigned long flowStartTime = 0;
 bool leakDetected = false;
+LeakType leakType = LEAK_NONE;
 bool wifiConnected = false;
-bool valveOpen = true; // Track valve state
+bool valveOpen = true;
 Servo shutoffValve;
 
 // Serial command buffer
@@ -38,8 +27,8 @@ String serialCmdBuffer = "";
 
 void connectWiFi() {
   Serial.print("[WiFi] Connecting to ");
-  Serial.println(ssid);
-  WiFi.begin(ssid, password);
+  Serial.println(WIFI_SSID);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   unsigned long startAttempt = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 5000) {
@@ -62,7 +51,7 @@ void sendDataToBackend() {
   }
 
   HTTPClient http;
-  http.begin(serverUrl);
+  http.begin(SERVER_URL);
   http.addHeader("Content-Type", "application/json");
 
   StaticJsonDocument<256> doc;
@@ -72,6 +61,24 @@ void sendDataToBackend() {
   doc["leak_status"] = leakDetected;
   doc["valve_open"] = valveOpen;
   doc["water_loss"] = leakDetected ? (flowRate * 0.5) : 0.0;
+  const char *httpLeakType = "none";
+  if (leakDetected) {
+    switch (leakType) {
+    case LEAK_BURST:
+      httpLeakType = "burst";
+      break;
+    case LEAK_PROLONGED:
+      httpLeakType = "prolonged";
+      break;
+    case LEAK_CLOSED_VALVE:
+      httpLeakType = "closed_valve";
+      break;
+    default:
+      httpLeakType = "unknown";
+      break;
+    }
+  }
+  doc["leak_type"] = httpLeakType;
 
   String requestBody;
   serializeJson(doc, requestBody);
@@ -88,16 +95,16 @@ void sendDataToBackend() {
       if (respDoc.containsKey("valve_open")) {
         bool desiredState = respDoc["valve_open"];
         if (!desiredState && valveOpen) {
-          // Server says CLOSE, we're open → close
           valveOpen = false;
           leakDetected = false;
+          leakType = LEAK_NONE;
           flowStartTime = 0;
           shutoffValve.write(90);
           Serial.println("\n>>> [HTTP] VALVE CLOSED by server command <<<");
         } else if (desiredState && !valveOpen) {
-          // Server says OPEN, we're closed → open
           valveOpen = true;
           leakDetected = false;
+          leakType = LEAK_NONE;
           flowStartTime = 0;
           shutoffValve.write(0);
           Serial.println("\n>>> [HTTP] VALVE OPENED by server command <<<");
@@ -117,19 +124,22 @@ void processSerialCommand(String cmd) {
 
   if (cmd == "$$CMD:VALVE_CLOSE$$") {
     valveOpen = false;
-    leakDetected = false;   // Clear leak flag
-    flowStartTime = 0;      // Reset flow timer
-    shutoffValve.write(90); // Close valve
+    leakDetected = false;
+    leakType = LEAK_NONE;
+    flowStartTime = 0;
+    shutoffValve.write(90);
     Serial.println("\n>>> [CMD] VALVE CLOSED by remote command <<<");
   } else if (cmd == "$$CMD:VALVE_OPEN$$") {
     valveOpen = true;
-    leakDetected = false;  // Reset leak state on manual reopen
-    flowStartTime = 0;     // Reset flow timer
-    shutoffValve.write(0); // Open valve
+    leakDetected = false;
+    leakType = LEAK_NONE;
+    flowStartTime = 0;
+    shutoffValve.write(0);
     Serial.println(
         "\n>>> [CMD] VALVE OPENED by remote command — Leak reset <<<");
   } else if (cmd == "$$CMD:RESET_LEAK$$") {
     leakDetected = false;
+    leakType = LEAK_NONE;
     flowStartTime = 0;
     Serial.println(
         "\n>>> [CMD] LEAK RESET by remote command (valve unchanged) <<<");
@@ -209,32 +219,56 @@ void loop() {
     int potValue = analogRead(FLOW_SENSOR_PIN);
     pulseCount = (potValue > 100) ? map(potValue, 0, 4095, 0, 100) : 0;
 
-    // If valve is closed, no water flows — zero out readings
-    if (!valveOpen) {
-      flowRate = 0.0;
-      pulseCount = 0;
-    } else {
-      flowRate = ((1000.0 / (currentMillis - lastMillis)) * pulseCount) /
-                 CALIBRATION_FACTOR;
+    // Always calculate real flow rate from the sensor
+    flowRate = ((1000.0 / (currentMillis - lastMillis)) * pulseCount) /
+               CALIBRATION_FACTOR;
+
+    // Only accumulate consumption when valve is open (intentional use)
+    if (valveOpen) {
       totalLiters += (flowRate / 60.0);
     }
     lastMillis = currentMillis;
 
-    // Only run leak detection if valve is open
-    if (valveOpen && flowRate > 0.1) {
-      if (flowStartTime == 0)
-        flowStartTime = currentMillis;
-      unsigned long duration = (currentMillis - flowStartTime) / 1000;
+    // ── Leak detection ──
+    if (!leakDetected) {
 
-      if (!leakDetected && duration > LEAK_THRESHOLD_SECONDS) {
+      // 1) CRITICAL: Flow detected while valve is CLOSED → pipe burst
+      if (!valveOpen && flowRate > CLOSED_VALVE_LEAK_THRESHOLD) {
         leakDetected = true;
-        valveOpen = false;
-        shutoffValve.write(90); // Close
+        leakType = LEAK_CLOSED_VALVE;
         Serial.println(
-            "\n>>> [!] FATAL: LEAK DETECTED! SHUTTING OFF VALVE! <<<");
+            "\n>>> [!] LEAK: Flow detected while valve is CLOSED — "
+            "possible pipe burst! <<<");
       }
-    } else if (flowRate <= 0.1) {
-      flowStartTime = 0;
+
+      // 2) BURST: Sudden flow rate spike while valve is open
+      else if (valveOpen && flowRate > BURST_FLOW_RATE) {
+        leakDetected = true;
+        leakType = LEAK_BURST;
+        valveOpen = false;
+        shutoffValve.write(90);
+        Serial.println(
+            "\n>>> [!] LEAK: Flow rate spike detected! SHUTTING OFF VALVE! <<<");
+      }
+
+      // 3) PROLONGED: Continuous flow for too long while valve is open
+      else if (valveOpen && flowRate > 0.1) {
+        if (flowStartTime == 0)
+          flowStartTime = currentMillis;
+        unsigned long duration = currentMillis - flowStartTime;
+
+        if (duration > PROLONGED_FLOW_THRESHOLD_MS) {
+          leakDetected = true;
+          leakType = LEAK_PROLONGED;
+          valveOpen = false;
+          shutoffValve.write(90);
+          Serial.println(
+              "\n>>> [!] LEAK: Prolonged continuous flow (30+ min)! "
+              "SHUTTING OFF VALVE! <<<");
+        }
+      } else if (flowRate <= 0.1) {
+        flowStartTime = 0; // Reset timer when flow stops
+      }
     }
 
     Serial.print("Flow: ");
@@ -246,9 +280,43 @@ void loop() {
     Serial.print(" | Valve: ");
     Serial.print(valveOpen ? "OPEN" : "CLOSED");
     Serial.print(" | Status: ");
-    Serial.println(leakDetected ? "LEAK" : "OK");
+    if (!leakDetected) {
+      Serial.println("OK");
+    } else {
+      switch (leakType) {
+      case LEAK_BURST:
+        Serial.println("LEAK:BURST");
+        break;
+      case LEAK_PROLONGED:
+        Serial.println("LEAK:PROLONGED");
+        break;
+      case LEAK_CLOSED_VALVE:
+        Serial.println("LEAK:CLOSED_VALVE");
+        break;
+      default:
+        Serial.println("LEAK");
+        break;
+      }
+    }
 
     // Machine-readable JSON line for the serial bridge
+    const char *leakTypeStr = "none";
+    if (leakDetected) {
+      switch (leakType) {
+      case LEAK_BURST:
+        leakTypeStr = "burst";
+        break;
+      case LEAK_PROLONGED:
+        leakTypeStr = "prolonged";
+        break;
+      case LEAK_CLOSED_VALVE:
+        leakTypeStr = "closed_valve";
+        break;
+      default:
+        leakTypeStr = "unknown";
+        break;
+      }
+    }
     Serial.print("$$JSON:{\"device_id\":\"");
     Serial.print(DEVICE_ID);
     Serial.print("\",\"flow_rate\":");
@@ -257,7 +325,9 @@ void loop() {
     Serial.print(totalLiters, 3);
     Serial.print(",\"leak_status\":");
     Serial.print(leakDetected ? "true" : "false");
-    Serial.print(",\"valve_open\":");
+    Serial.print(",\"leak_type\":\"");
+    Serial.print(leakTypeStr);
+    Serial.print("\",\"valve_open\":");
     Serial.print(valveOpen ? "true" : "false");
     Serial.print(",\"water_loss\":");
     Serial.print(leakDetected ? (flowRate * 0.5) : 0.0, 2);
