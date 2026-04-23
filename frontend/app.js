@@ -26,7 +26,24 @@ const activeLeaksCard = document.getElementById('active-leaks-card');
 const devices = {};
 let socket = null;
 let reconnectTimeout = null;
-let currentDetailDevice = null; // Track which device detail panel is showing
+let currentDetailDevice = null;
+let flowChart = null; // Chart.js instance (detail panel)
+let mainChart = null; // Chart.js instance (main dashboard)
+const mainChartHistory = {}; // { device_id: [{ time, flow_rate }] }
+const MAX_MAIN_CHART_POINTS = 60;
+const DEVICE_COLORS = [
+    '#3b82f6', '#22d3ee', '#a78bfa', '#f59e0b',
+    '#22c55e', '#ec4899', '#f97316', '#14b8a6'
+];
+
+// Leak type display config
+const LEAK_TYPE_CONFIG = {
+    burst:        { label: 'BURST',        severity: 'critical', icon: '💥', description: 'Flow rate spike detected' },
+    prolonged:    { label: 'PROLONGED',    severity: 'warning',  icon: '🕐', description: 'Continuous flow for 30+ min' },
+    closed_valve: { label: 'CLOSED VALVE', severity: 'critical', icon: '🔴', description: 'Flow while valve is closed' },
+    unknown:      { label: 'LEAK',         severity: 'warning',  icon: '⚠',  description: 'Leak detected' },
+    none:         { label: 'OK',           severity: 'ok',       icon: '✓',  description: 'Normal operation' }
+};
 
 // ═══════════════════════ WEBSOCKET ═══════════════════════
 function connectWebSocket() {
@@ -59,22 +76,29 @@ function connectWebSocket() {
         if (type === 'INIT') {
             data.forEach(d => {
                 devices[d.device_id] = d;
+                updateMainChartData(d);
             });
             renderDashboard();
+            renderMainChart();
         } else if (type === 'UPDATE') {
             const prevDevice = devices[data.device_id];
             devices[data.device_id] = data;
+            updateMainChartData(data);
             renderDashboard();
+            renderMainChart();
 
             // Update detail panel if it's showing this device
             if (currentDetailDevice === data.device_id) {
                 updateDetailPanel(data);
             }
 
-            // Check for leak alert
+            // Check for leak alert — with leak type context
             if (data.alert === 'LEAK_DETECTED') {
-                showToast(`🚨 LEAK DETECTED at ${formatDeviceName(data.device_id)}!`, 'danger');
+                const ltConfig = LEAK_TYPE_CONFIG[data.leak_type] || LEAK_TYPE_CONFIG.unknown;
+                showToast(`${ltConfig.icon} LEAK at ${formatDeviceName(data.device_id)} — ${ltConfig.description}`, 'danger');
                 flashRow(data.device_id);
+            } else if (data.alert === 'ANOMALY' && data.anomaly) {
+                showToast(`📊 Unusual flow at ${formatDeviceName(data.device_id)} — ${data.anomaly.ratio}x above baseline for this hour`, 'info');
             }
 
             // Check for leak recovery
@@ -195,8 +219,12 @@ function renderDashboard() {
             statusClass = 'status-stale';
             statusText = '⏸ OFFLINE';
         } else if (d.leak_status) {
-            statusClass = 'status-leak';
-            statusText = '⚠ LEAK';
+            const ltConfig = LEAK_TYPE_CONFIG[d.leak_type] || LEAK_TYPE_CONFIG.unknown;
+            statusClass = ltConfig.severity === 'critical' ? 'status-leak-critical' : 'status-leak';
+            statusText = `${ltConfig.icon} ${ltConfig.label}`;
+        } else if (d.anomaly) {
+            statusClass = 'status-anomaly';
+            statusText = `📊 ANOMALY (${d.anomaly.ratio}x)`;
         } else {
             statusClass = 'status-ok';
             statusText = '✓ NORMAL';
@@ -261,35 +289,88 @@ async function openDetailPanel(deviceId) {
         updateDetailPanel(device);
     }
 
-    // Fetch history from backend
-    try {
-        const res = await fetch(`/api/devices/${encodeURIComponent(deviceId)}`);
-        if (!res.ok) throw new Error('Not found');
-        const data = await res.json();
+    // Fetch history and report in parallel
+    const [historyRes, reportRes, baselineRes] = await Promise.allSettled([
+        fetch(`/api/devices/${encodeURIComponent(deviceId)}`),
+        fetch(`/api/report/${encodeURIComponent(deviceId)}`),
+        fetch(`/api/baseline/${encodeURIComponent(deviceId)}`)
+    ]);
 
-        if (data.history && data.history.length > 0) {
-            const recent = data.history.slice(-20).reverse();
-            detailHistory.innerHTML = recent.map(h => `
-                <div class="history-item">
-                    <span class="hi-time">${formatTime(h.timestamp)}</span>
-                    <span class="hi-flow">${(h.flow_rate || 0).toFixed(2)} L/min</span>
-                    <span class="hi-status ${h.leak_status ? 'leak' : 'ok'}">${h.leak_status ? 'LEAK' : 'OK'}</span>
-                </div>
-            `).join('');
-        } else {
-            detailHistory.innerHTML = '<p class="empty-history">No history available</p>';
+    // ── History ──
+    try {
+        if (historyRes.status === 'fulfilled' && historyRes.value.ok) {
+            const data = await historyRes.value.json();
+            if (data.history && data.history.length > 0) {
+                renderFlowChart(data.history);
+                const recent = data.history.slice(-20).reverse();
+                detailHistory.innerHTML = recent.map(h => {
+                    const ltConfig = LEAK_TYPE_CONFIG[h.leak_type] || LEAK_TYPE_CONFIG.none;
+                    const sc = h.leak_status ? (ltConfig.severity === 'critical' ? 'leak-critical' : 'leak') : 'ok';
+                    const statusLabel = h.leak_status ? ltConfig.label : 'OK';
+                    return `
+                        <div class="history-item">
+                            <span class="hi-time">${formatTime(h.timestamp)}</span>
+                            <span class="hi-flow">${(h.flow_rate || 0).toFixed(2)} L/min</span>
+                            <span class="hi-status ${sc}">${statusLabel}</span>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                detailHistory.innerHTML = '<p class="empty-history">No history available</p>';
+                renderFlowChart([]);
+            }
         }
     } catch (err) {
         console.error('[Detail] Error fetching history:', err);
         detailHistory.innerHTML = '<p class="empty-history">Failed to load history</p>';
+    }
+
+    // ── Usage Report (#3) ──
+    const reportSection = document.getElementById('detail-report');
+    if (reportSection) {
+        try {
+            if (reportRes.status === 'fulfilled' && reportRes.value.ok) {
+                const report = await reportRes.value.json();
+                reportSection.innerHTML = renderReportHTML(report);
+                renderDailyBreakdownChart(report.daily_breakdown);
+            } else {
+                reportSection.innerHTML = '<p class="empty-history">Not enough data for report yet</p>';
+            }
+        } catch (err) {
+            reportSection.innerHTML = '<p class="empty-history">Failed to load report</p>';
+        }
+    }
+
+    // ── Baseline Profile (#1) ──
+    const baselineSection = document.getElementById('detail-baseline');
+    if (baselineSection) {
+        try {
+            if (baselineRes.status === 'fulfilled' && baselineRes.value.ok) {
+                const baseline = await baselineRes.value.json();
+                if (baseline.status === 'ok' && Object.keys(baseline.hours).length > 0) {
+                    baselineSection.innerHTML = renderBaselineHTML(baseline);
+                    renderBaselineChart(baseline.hours);
+                } else {
+                    baselineSection.innerHTML = '<p class="empty-history">Collecting baseline data...</p>';
+                }
+            }
+        } catch (err) {
+            baselineSection.innerHTML = '<p class="empty-history">Failed to load baseline</p>';
+        }
     }
 }
 
 function updateDetailPanel(device) {
     detailFlow.textContent = `${(device.flow_rate || 0).toFixed(2)} L/min`;
     detailUsage.textContent = `${(device.total_consumption || 0).toFixed(3)} L`;
-    detailStatus.textContent = device.leak_status ? '⚠ LEAK' : '✓ Normal';
-    detailStatus.style.color = device.leak_status ? 'var(--accent-red)' : 'var(--accent-green)';
+    if (device.leak_status) {
+        const ltConfig = LEAK_TYPE_CONFIG[device.leak_type] || LEAK_TYPE_CONFIG.unknown;
+        detailStatus.textContent = `${ltConfig.icon} ${ltConfig.label}`;
+        detailStatus.style.color = ltConfig.severity === 'critical' ? 'var(--accent-red)' : 'var(--accent-orange, #e67e22)';
+    } else {
+        detailStatus.textContent = '✓ Normal';
+        detailStatus.style.color = 'var(--accent-green)';
+    }
     detailLoss.textContent = `${(device.water_loss || 0).toFixed(2)} L`;
 
     // Update valve control button in detail panel
@@ -383,6 +464,491 @@ function formatTime(isoString) {
         return '—';
     }
 }
+
+// ═══════════════════════ MAIN DASHBOARD CHART ═══════════════════════
+function updateMainChartData(deviceData) {
+    const id = deviceData.device_id;
+    if (!mainChartHistory[id]) {
+        mainChartHistory[id] = [];
+    }
+    mainChartHistory[id].push({
+        time: new Date().toLocaleTimeString(),
+        flow_rate: deviceData.flow_rate || 0
+    });
+    if (mainChartHistory[id].length > MAX_MAIN_CHART_POINTS) {
+        mainChartHistory[id].shift();
+    }
+}
+
+function renderMainChart() {
+    const canvas = document.getElementById('main-flow-chart');
+    if (!canvas) return;
+
+    const deviceIds = Object.keys(mainChartHistory);
+    const chartDeviceCount = document.getElementById('chart-device-count');
+    if (chartDeviceCount) {
+        chartDeviceCount.textContent = `${deviceIds.length} device${deviceIds.length !== 1 ? 's' : ''}`;
+    }
+
+    if (deviceIds.length === 0) {
+        if (mainChart) { mainChart.destroy(); mainChart = null; }
+        return;
+    }
+
+    // Build unified time labels from the device with the most data points
+    const maxLen = Math.max(...deviceIds.map(id => mainChartHistory[id].length));
+    const longestId = deviceIds.find(id => mainChartHistory[id].length === maxLen);
+    const labels = mainChartHistory[longestId].map(p => p.time);
+
+    // Build one dataset per device
+    const datasets = deviceIds.map((id, i) => {
+        const color = DEVICE_COLORS[i % DEVICE_COLORS.length];
+        const history = mainChartHistory[id];
+        // Right-align data so latest points line up
+        const padded = new Array(maxLen - history.length).fill(null)
+            .concat(history.map(p => p.flow_rate));
+
+        return {
+            label: formatDeviceName(id),
+            data: padded,
+            borderColor: color,
+            backgroundColor: color + '1a',
+            borderWidth: 2,
+            pointRadius: 2,
+            pointBackgroundColor: color,
+            fill: false,
+            tension: 0.3,
+            spanGaps: true
+        };
+    });
+
+    if (mainChart) {
+        mainChart.data.labels = labels;
+        mainChart.data.datasets = datasets;
+        mainChart.update('none');
+        return;
+    }
+
+    mainChart = new Chart(canvas, {
+        type: 'line',
+        data: { labels, datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 0 },
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top',
+                    labels: {
+                        color: '#94a3b8',
+                        font: { size: 12, weight: '600' },
+                        boxWidth: 12,
+                        boxHeight: 12,
+                        borderRadius: 3,
+                        useBorderRadius: true,
+                        padding: 16
+                    }
+                },
+                tooltip: {
+                    backgroundColor: 'rgba(17, 24, 39, 0.95)',
+                    titleColor: '#e2e8f0',
+                    bodyColor: '#94a3b8',
+                    borderColor: 'rgba(255,255,255,0.1)',
+                    borderWidth: 1,
+                    padding: 12
+                }
+            },
+            scales: {
+                x: {
+                    ticks: { maxTicksLimit: 10, color: '#64748b', font: { size: 10 } },
+                    grid: { color: 'rgba(255,255,255,0.04)' }
+                },
+                y: {
+                    beginAtZero: true,
+                    title: { display: true, text: 'L/min', color: '#64748b', font: { size: 11 } },
+                    ticks: { color: '#64748b' },
+                    grid: { color: 'rgba(255,255,255,0.04)' }
+                }
+            }
+        }
+    });
+}
+
+// ═══════════════════════ DETAIL PANEL FLOW CHART ═══════════════════════
+function renderFlowChart(history) {
+    const canvas = document.getElementById('detail-chart');
+    if (!canvas) return;
+
+    // Destroy previous chart
+    if (flowChart) {
+        flowChart.destroy();
+        flowChart = null;
+    }
+
+    if (!history || history.length === 0) {
+        return;
+    }
+
+    // Use last 60 data points
+    const data = history.slice(-60);
+    const labels = data.map(h => formatTime(h.timestamp));
+    const flowData = data.map(h => h.flow_rate || 0);
+
+    // Color points by leak status
+    const pointColors = data.map(h => {
+        if (!h.leak_status) return '#3498db';
+        const lt = LEAK_TYPE_CONFIG[h.leak_type] || LEAK_TYPE_CONFIG.unknown;
+        return lt.severity === 'critical' ? '#e74c3c' : '#e67e22';
+    });
+
+    // Build leak annotation segments (shade background where leaks occurred)
+    const leakSegments = [];
+    let inLeak = false;
+    let segStart = 0;
+    data.forEach((h, i) => {
+        if (h.leak_status && !inLeak) { inLeak = true; segStart = i; }
+        if (!h.leak_status && inLeak) { inLeak = false; leakSegments.push({ start: segStart, end: i }); }
+    });
+    if (inLeak) leakSegments.push({ start: segStart, end: data.length - 1 });
+
+    flowChart = new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [{
+                label: 'Flow Rate (L/min)',
+                data: flowData,
+                borderColor: '#3498db',
+                backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                borderWidth: 2,
+                pointBackgroundColor: pointColors,
+                pointRadius: 3,
+                fill: true,
+                tension: 0.3
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 300 },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        afterLabel: function(ctx) {
+                            const d = data[ctx.dataIndex];
+                            if (d.leak_status) {
+                                const lt = LEAK_TYPE_CONFIG[d.leak_type] || LEAK_TYPE_CONFIG.unknown;
+                                return `${lt.icon} ${lt.description}`;
+                            }
+                            return '';
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: { maxTicksLimit: 8, color: '#888', font: { size: 10 } },
+                    grid: { color: 'rgba(255,255,255,0.05)' }
+                },
+                y: {
+                    beginAtZero: true,
+                    title: { display: true, text: 'L/min', color: '#888' },
+                    ticks: { color: '#888' },
+                    grid: { color: 'rgba(255,255,255,0.05)' }
+                }
+            }
+        },
+        plugins: [{
+            id: 'leakHighlight',
+            beforeDraw(chart) {
+                const ctx = chart.ctx;
+                const xScale = chart.scales.x;
+                const yScale = chart.scales.y;
+                leakSegments.forEach(seg => {
+                    const x1 = xScale.getPixelForValue(seg.start);
+                    const x2 = xScale.getPixelForValue(seg.end);
+                    ctx.fillStyle = 'rgba(231, 76, 60, 0.08)';
+                    ctx.fillRect(x1, yScale.top, x2 - x1, yScale.bottom - yScale.top);
+                });
+            }
+        }]
+    });
+}
+
+// ═══════════════════════ REPORT RENDERING (#3) ═══════════════════════
+function renderReportHTML(report) {
+    const { today, week } = report;
+
+    function trendBadge(val) {
+        if (val === null) return '<span class="trend-badge trend-neutral">—</span>';
+        const sign = val > 0 ? '+' : '';
+        const cls = val > 15 ? 'trend-up' : val < -15 ? 'trend-down' : 'trend-neutral';
+        return `<span class="trend-badge ${cls}">${sign}${val}%</span>`;
+    }
+
+    return `
+        <div class="report-grid">
+            <div class="report-card">
+                <h4>Today</h4>
+                <div class="report-stat">
+                    <span class="report-label">Consumption</span>
+                    <span class="report-value">${today.consumption.toFixed(3)} L</span>
+                </div>
+                <div class="report-stat">
+                    <span class="report-label">Avg Flow</span>
+                    <span class="report-value">${today.avg_flow.toFixed(2)} L/min</span>
+                </div>
+                <div class="report-stat">
+                    <span class="report-label">Peak Flow</span>
+                    <span class="report-value">${today.peak_flow.toFixed(2)} L/min</span>
+                </div>
+                <div class="report-stat">
+                    <span class="report-label">Leak Events</span>
+                    <span class="report-value ${today.leak_events > 0 ? 'report-danger' : ''}">${today.leak_events}</span>
+                </div>
+                <div class="report-stat">
+                    <span class="report-label">vs Yesterday</span>
+                    ${trendBadge(today.trend_vs_yesterday)}
+                </div>
+            </div>
+            <div class="report-card">
+                <h4>This Week</h4>
+                <div class="report-stat">
+                    <span class="report-label">Consumption</span>
+                    <span class="report-value">${week.consumption.toFixed(3)} L</span>
+                </div>
+                <div class="report-stat">
+                    <span class="report-label">Avg Flow</span>
+                    <span class="report-value">${week.avg_flow.toFixed(2)} L/min</span>
+                </div>
+                <div class="report-stat">
+                    <span class="report-label">Peak Flow</span>
+                    <span class="report-value">${week.peak_flow.toFixed(2)} L/min</span>
+                </div>
+                <div class="report-stat">
+                    <span class="report-label">Leak Events</span>
+                    <span class="report-value ${week.leak_events > 0 ? 'report-danger' : ''}">${week.leak_events}</span>
+                </div>
+                <div class="report-stat">
+                    <span class="report-label">vs Prev Week</span>
+                    ${trendBadge(week.trend_vs_prev_week)}
+                </div>
+            </div>
+        </div>
+        <div class="report-chart-container">
+            <canvas id="daily-breakdown-chart"></canvas>
+        </div>
+    `;
+}
+
+let dailyChart = null;
+function renderDailyBreakdownChart(breakdown) {
+    const canvas = document.getElementById('daily-breakdown-chart');
+    if (!canvas) return;
+    if (dailyChart) { dailyChart.destroy(); dailyChart = null; }
+
+    const labels = breakdown.map(d => d.label);
+    const avgData = breakdown.map(d => d.avg_flow);
+    const peakData = breakdown.map(d => d.peak_flow);
+
+    dailyChart = new Chart(canvas, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: 'Avg Flow (L/min)',
+                    data: avgData,
+                    backgroundColor: 'rgba(59, 130, 246, 0.6)',
+                    borderColor: '#3b82f6',
+                    borderWidth: 1,
+                    borderRadius: 4
+                },
+                {
+                    label: 'Peak Flow (L/min)',
+                    data: peakData,
+                    backgroundColor: 'rgba(34, 211, 238, 0.3)',
+                    borderColor: '#22d3ee',
+                    borderWidth: 1,
+                    borderRadius: 4
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 300 },
+            plugins: {
+                legend: { labels: { color: '#94a3b8', font: { size: 11 } } }
+            },
+            scales: {
+                x: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+                y: { beginAtZero: true, ticks: { color: '#64748b' }, grid: { color: 'rgba(255,255,255,0.04)' } }
+            }
+        }
+    });
+}
+
+// ═══════════════════════ BASELINE RENDERING (#1) ═══════════════════════
+function renderBaselineHTML(baseline) {
+    const currentHour = new Date().getHours();
+    const currentSlot = baseline.hours[currentHour];
+    const currentAvg = currentSlot ? currentSlot.avg_flow : null;
+
+    return `
+        <div class="baseline-info">
+            <div class="baseline-current">
+                <span class="report-label">Baseline for ${currentHour}:00-${currentHour + 1}:00</span>
+                <span class="report-value">${currentAvg !== null ? currentAvg.toFixed(2) + ' L/min' : 'No data'}</span>
+                ${currentSlot ? `<span class="baseline-samples">${currentSlot.samples} samples</span>` : ''}
+            </div>
+        </div>
+        <div class="report-chart-container">
+            <canvas id="baseline-chart"></canvas>
+        </div>
+    `;
+}
+
+let baselineChart = null;
+function renderBaselineChart(hours) {
+    const canvas = document.getElementById('baseline-chart');
+    if (!canvas) return;
+    if (baselineChart) { baselineChart.destroy(); baselineChart = null; }
+
+    const labels = [];
+    const data = [];
+    const bgColors = [];
+    const currentHour = new Date().getHours();
+
+    for (let h = 0; h < 24; h++) {
+        labels.push(`${String(h).padStart(2, '0')}:00`);
+        data.push(hours[h] ? hours[h].avg_flow : 0);
+        bgColors.push(h === currentHour ? 'rgba(34, 197, 94, 0.7)' : 'rgba(167, 139, 250, 0.5)');
+    }
+
+    baselineChart = new Chart(canvas, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [{
+                label: 'Avg Flow (L/min)',
+                data,
+                backgroundColor: bgColors,
+                borderColor: bgColors.map(c => c.replace(/[\d.]+\)$/, '1)')),
+                borderWidth: 1,
+                borderRadius: 3
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 300 },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        afterLabel: (ctx) => {
+                            const h = ctx.dataIndex;
+                            const slot = hours[h];
+                            return slot ? `${slot.samples} samples` : 'No data';
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: { ticks: { maxTicksLimit: 12, color: '#64748b', font: { size: 9 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+                y: { beginAtZero: true, title: { display: true, text: 'L/min', color: '#64748b', font: { size: 10 } }, ticks: { color: '#64748b' }, grid: { color: 'rgba(255,255,255,0.04)' } }
+            }
+        }
+    });
+}
+
+// ═══════════════════════ SETTINGS MODAL ═══════════════════════
+const settingsBtn = document.getElementById('settings-btn');
+const settingsModal = document.getElementById('settings-modal');
+const settingsOverlay = document.getElementById('settings-overlay');
+const settingsClose = document.getElementById('settings-close');
+const settingsStatus = document.getElementById('settings-status');
+
+function openSettings() {
+    settingsModal.classList.add('active');
+    settingsOverlay.classList.add('active');
+    settingsStatus.textContent = '';
+
+    // Load current settings
+    fetch('/api/settings')
+        .then(r => r.json())
+        .then(s => {
+            document.getElementById('email-enabled').checked = s.email?.enabled || false;
+            document.getElementById('gmail-user').value = s.email?.gmailUser || '';
+            document.getElementById('gmail-pass').value = '';
+            document.getElementById('gmail-pass').placeholder = s.email?.gmailAppPassword === '••••••••' ? '(saved — enter new to change)' : 'xxxx xxxx xxxx xxxx';
+            document.getElementById('email-recipient').value = s.email?.recipient || '';
+        })
+        .catch(() => {
+            settingsStatus.textContent = 'Failed to load settings';
+            settingsStatus.style.color = 'var(--accent-red)';
+        });
+}
+
+function closeSettings() {
+    settingsModal.classList.remove('active');
+    settingsOverlay.classList.remove('active');
+}
+
+settingsBtn.addEventListener('click', openSettings);
+settingsClose.addEventListener('click', closeSettings);
+settingsOverlay.addEventListener('click', closeSettings);
+
+document.getElementById('save-settings-btn').addEventListener('click', async () => {
+    const email = {
+        enabled: document.getElementById('email-enabled').checked,
+        gmailUser: document.getElementById('gmail-user').value.trim(),
+        gmailAppPassword: document.getElementById('gmail-pass').value.trim() || '••••••••',
+        recipient: document.getElementById('email-recipient').value.trim()
+    };
+
+    try {
+        const res = await fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email })
+        });
+        if (res.ok) {
+            settingsStatus.textContent = 'Settings saved!';
+            settingsStatus.style.color = 'var(--accent-green)';
+        } else {
+            settingsStatus.textContent = 'Failed to save';
+            settingsStatus.style.color = 'var(--accent-red)';
+        }
+    } catch {
+        settingsStatus.textContent = 'Cannot reach backend';
+        settingsStatus.style.color = 'var(--accent-red)';
+    }
+});
+
+document.getElementById('test-email-btn').addEventListener('click', async () => {
+    settingsStatus.textContent = 'Sending test email...';
+    settingsStatus.style.color = '#888';
+
+    try {
+        const res = await fetch('/api/settings/test-email', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+            settingsStatus.textContent = data.message || 'Test email sent!';
+            settingsStatus.style.color = 'var(--accent-green)';
+        } else {
+            settingsStatus.textContent = data.error || 'Test failed';
+            settingsStatus.style.color = 'var(--accent-red)';
+        }
+    } catch {
+        settingsStatus.textContent = 'Cannot reach backend';
+        settingsStatus.style.color = 'var(--accent-red)';
+    }
+});
 
 // ═══════════════════════ INIT ═══════════════════════
 connectWebSocket();

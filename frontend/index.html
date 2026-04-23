@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
         rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 </head>
 
 <body>
@@ -26,9 +27,12 @@
                         <p>Real-Time Water Monitoring & Leak Detection</p>
                     </div>
                 </div>
-                <div class="connection-status" id="connection-status">
-                    <span class="status-dot"></span>
-                    <span class="status-text">Connecting...</span>
+                <div class="header-right">
+                    <button class="settings-btn" id="settings-btn" title="Email Alert Settings">&#9881;</button>
+                    <div class="connection-status" id="connection-status">
+                        <span class="status-dot"></span>
+                        <span class="status-text">Connecting...</span>
+                    </div>
                 </div>
             </div>
         </header>
@@ -63,6 +67,16 @@
                 </div>
             </div>
         </div>
+
+        <section class="main-chart-section">
+            <div class="section-header">
+                <h2>Live Flow Rates</h2>
+                <span class="badge" id="chart-device-count">0 devices</span>
+            </div>
+            <div class="main-chart-container">
+                <canvas id="main-flow-chart"></canvas>
+            </div>
+        </section>
 
         <section class="device-list">
             <div class="section-header">
@@ -120,11 +134,64 @@
                 <!-- Valve control button injected by JS -->
             </div>
             <div class="detail-section">
+                <h3>Flow Rate History</h3>
+                <div class="chart-container">
+                    <canvas id="detail-chart"></canvas>
+                </div>
+            </div>
+            <div class="detail-section">
+                <h3>📊 Baseline Profile</h3>
+                <div id="detail-baseline">
+                    <p class="empty-history">Collecting baseline data...</p>
+                </div>
+            </div>
+            <div class="detail-section">
+                <h3>📋 Usage Report</h3>
+                <div id="detail-report">
+                    <p class="empty-history">Not enough data for report yet</p>
+                </div>
+            </div>
+            <div class="detail-section">
                 <h3>Recent History</h3>
                 <div class="history-list" id="detail-history">
                     <p class="empty-history">No history available</p>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settings-overlay"></div>
+    <div class="modal" id="settings-modal">
+        <div class="modal-header">
+            <h2>Email Alert Settings</h2>
+            <button class="detail-close" id="settings-close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p class="modal-hint">Use a <strong>Gmail App Password</strong> (not your regular password).<br>
+                Generate one at: Google Account &rarr; Security &rarr; App Passwords.</p>
+            <div class="form-group">
+                <label for="email-enabled">
+                    <input type="checkbox" id="email-enabled"> Enable email alerts
+                </label>
+            </div>
+            <div class="form-group">
+                <label for="gmail-user">Gmail Address</label>
+                <input type="email" id="gmail-user" placeholder="you@gmail.com">
+            </div>
+            <div class="form-group">
+                <label for="gmail-pass">App Password</label>
+                <input type="password" id="gmail-pass" placeholder="xxxx xxxx xxxx xxxx">
+            </div>
+            <div class="form-group">
+                <label for="email-recipient">Send Alerts To</label>
+                <input type="email" id="email-recipient" placeholder="alerts@example.com">
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="test-email-btn">Send Test</button>
+                <button class="btn btn-primary" id="save-settings-btn">Save</button>
+            </div>
+            <p class="modal-status" id="settings-status"></p>
         </div>
     </div>
 

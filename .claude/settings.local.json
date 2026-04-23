@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(node -c server.js)",
+      "Bash(node -c app.js)",
+      "Bash(node:*)",
+      "Bash(npm list:*)",
+      "Bash(where wokwi-cli:*)",
+      "Bash(code --list-extensions)",
+      "Bash(pio run:*)",
+      "Bash(where pio:*)",
+      "Bash(where platformio:*)",
+      "Read(//c/Users/Andi/.platformio/penv/Scripts/**)",
+      "Bash(/c/Users/Andi/.platformio/penv/Scripts/pio.exe run:*)"
+    ]
+  }
+}

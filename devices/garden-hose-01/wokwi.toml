@@ -1,0 +1,5 @@
+[wokwi]
+version = 1
+firmware = ".pio/build/garden-hose-01/firmware.bin"
+elf = ".pio/build/garden-hose-01/firmware.elf"
+rfc2217ServerPort = 4002

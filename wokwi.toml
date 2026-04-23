@@ -1,5 +1,13 @@
+# ═══════════════ WOKWI DEVICE SELECTOR ═══════════════
+# To simulate a different device, change the env name below.
+# Available:  kitchen-sink-01 | bathroom-faucet-01 | garden-hose-01
+#
+# 1. Change BOTH firmware + elf lines to the desired env
+# 2. Make sure you've built it first:  pio run -e <env-name>
+# 3. Press F1 → "Wokwi: Start Simulator" in VS Code
+
 [wokwi]
 version = 1
-firmware = ".pio/build/esp32dev/firmware.bin"
-elf = ".pio/build/esp32dev/firmware.elf"
+firmware = ".pio/build/kitchen-sink-01/firmware.bin"
+elf = ".pio/build/kitchen-sink-01/firmware.elf"
 rfc2217ServerPort = 4000
