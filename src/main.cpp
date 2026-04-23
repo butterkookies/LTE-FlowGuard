@@ -80,6 +80,30 @@ void sendDataToBackend() {
   if (httpResponseCode > 0) {
     Serial.print("[HTTP] Data sent, response: ");
     Serial.println(httpResponseCode);
+
+    // Parse response for valve commands from the backend
+    String response = http.getString();
+    StaticJsonDocument<128> respDoc;
+    if (deserializeJson(respDoc, response) == DeserializationError::Ok) {
+      if (respDoc.containsKey("valve_open")) {
+        bool desiredState = respDoc["valve_open"];
+        if (!desiredState && valveOpen) {
+          // Server says CLOSE, we're open → close
+          valveOpen = false;
+          leakDetected = false;
+          flowStartTime = 0;
+          shutoffValve.write(90);
+          Serial.println("\n>>> [HTTP] VALVE CLOSED by server command <<<");
+        } else if (desiredState && !valveOpen) {
+          // Server says OPEN, we're closed → open
+          valveOpen = true;
+          leakDetected = false;
+          flowStartTime = 0;
+          shutoffValve.write(0);
+          Serial.println("\n>>> [HTTP] VALVE OPENED by server command <<<");
+        }
+      }
+    }
   } else {
     Serial.print("[HTTP] Error sending POST: ");
     Serial.println(http.errorToString(httpResponseCode).c_str());
@@ -93,6 +117,8 @@ void processSerialCommand(String cmd) {
 
   if (cmd == "$$CMD:VALVE_CLOSE$$") {
     valveOpen = false;
+    leakDetected = false;   // Clear leak flag
+    flowStartTime = 0;      // Reset flow timer
     shutoffValve.write(90); // Close valve
     Serial.println("\n>>> [CMD] VALVE CLOSED by remote command <<<");
   } else if (cmd == "$$CMD:VALVE_OPEN$$") {
@@ -105,7 +131,8 @@ void processSerialCommand(String cmd) {
   } else if (cmd == "$$CMD:RESET_LEAK$$") {
     leakDetected = false;
     flowStartTime = 0;
-    Serial.println("\n>>> [CMD] LEAK RESET by remote command (valve unchanged) <<<");
+    Serial.println(
+        "\n>>> [CMD] LEAK RESET by remote command (valve unchanged) <<<");
   }
 }
 
@@ -173,15 +200,25 @@ void loop() {
   digitalWrite(LED_PIN, ledState);
   digitalWrite(LED_EXT_PIN, ledState);
 
+  // ── Continuous servo enforcement ──
+  // Prevent servo drift: always write the correct position
+  shutoffValve.write(valveOpen ? 0 : 90);
+
   // Every 1 second: Process Flow & Leak Logic
   if (currentMillis - lastMillis >= 1000) {
     int potValue = analogRead(FLOW_SENSOR_PIN);
     pulseCount = (potValue > 100) ? map(potValue, 0, 4095, 0, 100) : 0;
 
-    flowRate = ((1000.0 / (currentMillis - lastMillis)) * pulseCount) /
-               CALIBRATION_FACTOR;
+    // If valve is closed, no water flows — zero out readings
+    if (!valveOpen) {
+      flowRate = 0.0;
+      pulseCount = 0;
+    } else {
+      flowRate = ((1000.0 / (currentMillis - lastMillis)) * pulseCount) /
+                 CALIBRATION_FACTOR;
+      totalLiters += (flowRate / 60.0);
+    }
     lastMillis = currentMillis;
-    totalLiters += (flowRate / 60.0);
 
     // Only run leak detection if valve is open
     if (valveOpen && flowRate > 0.1) {

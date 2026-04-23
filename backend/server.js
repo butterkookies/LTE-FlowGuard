@@ -23,6 +23,7 @@ const MAX_HISTORY = 100;
 // When a command is issued from the dashboard, we store it here.
 // ESP32 data cannot override this — only another command can.
 const valveOverrides = {};  // { device_id: { valve_open: bool, leak_status: bool } }
+const consumptionSnapshots = {};  // { device_id: number } — frozen total when valve closed
 
 // Create HTTP server
 const server = http.createServer(app);
@@ -72,12 +73,17 @@ app.post('/api/data', (req, res) => {
         const override = valveOverrides[device_id];
         deviceData.valve_open = override.valve_open;
 
-        // If valve was commanded closed, mark as leak and keep loss data
+        // If valve was commanded closed, suppress flow and leak readings
         if (!override.valve_open) {
-            // Keep the ESP32's leak_status if it detected one, or mark based on command
+            deviceData.flow_rate = 0;
+            deviceData.water_loss = 0;
             deviceData.leak_status = override.leak_status !== undefined
                 ? override.leak_status
                 : leak_status;
+            // Freeze total_consumption to the snapshot taken when valve was closed
+            if (consumptionSnapshots[device_id] !== undefined) {
+                deviceData.total_consumption = consumptionSnapshots[device_id];
+            }
         } else {
             // Valve was commanded open = leak reset
             deviceData.leak_status = false;
@@ -112,7 +118,13 @@ app.post('/api/data', (req, res) => {
         }
     });
 
-    res.status(200).json({ status: 'OK' });
+    // Include desired valve state in response so ESP32 can enforce it
+    // This gives the ESP32 a reliable command channel every 2 seconds
+    const response = { status: 'OK' };
+    if (valveOverrides[device_id]) {
+        response.valve_open = valveOverrides[device_id].valve_open;
+    }
+    res.status(200).json(response);
 });
 
 // ═══════════════ ENDPOINT: Send command to device ═══════════════
@@ -132,9 +144,15 @@ app.post('/api/command', (req, res) => {
 
     // ── Set server-side valve override ──
     if (command === 'VALVE_CLOSE') {
-        valveOverrides[device_id] = { valve_open: false };
+        valveOverrides[device_id] = { valve_open: false, leak_status: false };
+        // Snapshot current consumption to freeze it while valve is closed
+        if (devices[device_id]) {
+            consumptionSnapshots[device_id] = devices[device_id].total_consumption || 0;
+        }
     } else if (command === 'VALVE_OPEN') {
         valveOverrides[device_id] = { valve_open: true, leak_status: false };
+        // Release the consumption freeze
+        delete consumptionSnapshots[device_id];
     } else if (command === 'RESET_LEAK') {
         // Clear leak alarm but keep valve in its current state
         const currentValveState = valveOverrides[device_id]
