@@ -157,7 +157,7 @@ function connectSerial() {
         } else {
             console.log(`  [Serial] ⚠ Error: ${err.message}`);
         }
-        setTimeout(connectSerial, RECONNECT_DELAY_MS);
+        // Don't reconnect here — 'close' event will handle it
     });
 }
 

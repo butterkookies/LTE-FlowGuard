@@ -65,11 +65,12 @@ void sendDataToBackend() {
   http.begin(serverUrl);
   http.addHeader("Content-Type", "application/json");
 
-  StaticJsonDocument<200> doc;
+  StaticJsonDocument<256> doc;
   doc["device_id"] = DEVICE_ID;
   doc["flow_rate"] = flowRate;
   doc["total_consumption"] = totalLiters;
   doc["leak_status"] = leakDetected;
+  doc["valve_open"] = valveOpen;
   doc["water_loss"] = leakDetected ? (flowRate * 0.5) : 0.0;
 
   String requestBody;
@@ -104,9 +105,7 @@ void processSerialCommand(String cmd) {
   } else if (cmd == "$$CMD:RESET_LEAK$$") {
     leakDetected = false;
     flowStartTime = 0;
-    valveOpen = true;
-    shutoffValve.write(0);
-    Serial.println("\n>>> [CMD] LEAK RESET by remote command <<<");
+    Serial.println("\n>>> [CMD] LEAK RESET by remote command (valve unchanged) <<<");
   }
 }
 

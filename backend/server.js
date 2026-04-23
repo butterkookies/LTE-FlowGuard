@@ -133,16 +133,25 @@ app.post('/api/command', (req, res) => {
     // ── Set server-side valve override ──
     if (command === 'VALVE_CLOSE') {
         valveOverrides[device_id] = { valve_open: false };
-    } else if (command === 'VALVE_OPEN' || command === 'RESET_LEAK') {
+    } else if (command === 'VALVE_OPEN') {
         valveOverrides[device_id] = { valve_open: true, leak_status: false };
+    } else if (command === 'RESET_LEAK') {
+        // Clear leak alarm but keep valve in its current state
+        const currentValveState = valveOverrides[device_id]
+            ? valveOverrides[device_id].valve_open
+            : (devices[device_id] ? devices[device_id].valve_open : true);
+        valveOverrides[device_id] = { valve_open: currentValveState, leak_status: false };
     }
 
     // Update current device state immediately
     if (devices[device_id]) {
         if (command === 'VALVE_CLOSE') {
             devices[device_id].valve_open = false;
-        } else {
+        } else if (command === 'VALVE_OPEN') {
             devices[device_id].valve_open = true;
+            devices[device_id].leak_status = false;
+            devices[device_id].water_loss = 0;
+        } else if (command === 'RESET_LEAK') {
             devices[device_id].leak_status = false;
             devices[device_id].water_loss = 0;
         }

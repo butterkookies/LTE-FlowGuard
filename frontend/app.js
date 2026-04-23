@@ -47,7 +47,13 @@ function connectWebSocket() {
     };
 
     socket.onmessage = (event) => {
-        const payload = JSON.parse(event.data);
+        let payload;
+        try {
+            payload = JSON.parse(event.data);
+        } catch (e) {
+            console.error('[WS] Failed to parse message:', e);
+            return;
+        }
         const { type, data } = payload;
 
         if (type === 'INIT') {
@@ -109,16 +115,24 @@ async function sendCommand(deviceId, command) {
         });
 
         if (res.ok) {
-            const action = command === 'VALVE_CLOSE' ? 'Shutting off' : 'Opening';
-            showToast(`🔧 ${action} valve at ${formatDeviceName(deviceId)}...`, 'info');
+            const actionMap = {
+                'VALVE_CLOSE': 'Shutting off valve',
+                'VALVE_OPEN': 'Opening valve',
+                'RESET_LEAK': 'Resetting leak alarm'
+            };
+            showToast(`🔧 ${actionMap[command]} at ${formatDeviceName(deviceId)}...`, 'info');
 
             // Optimistic UI update
             if (devices[deviceId]) {
                 if (command === 'VALVE_CLOSE') {
                     devices[deviceId].valve_open = false;
-                } else {
+                } else if (command === 'VALVE_OPEN') {
                     devices[deviceId].valve_open = true;
                     devices[deviceId].leak_status = false;
+                    devices[deviceId].water_loss = 0;
+                } else if (command === 'RESET_LEAK') {
+                    devices[deviceId].leak_status = false;
+                    devices[deviceId].water_loss = 0;
                 }
                 renderDashboard();
                 if (currentDetailDevice === deviceId) {
@@ -196,6 +210,10 @@ function renderDashboard() {
         const valveBtnClass = valveOpen ? 'valve-btn valve-close' : 'valve-btn valve-open';
         const valveBtnText = valveOpen ? 'Shut Off' : 'Reopen';
 
+        const resetBtn = d.leak_status
+            ? `<button class="valve-btn valve-reset" data-device="${d.device_id}" data-action="RESET_LEAK">Reset Leak</button>`
+            : '';
+
         row.innerHTML = `
             <td><span class="device-name">${displayName}</span></td>
             <td><span class="status-badge ${statusClass}">${statusText}</span></td>
@@ -203,25 +221,27 @@ function renderDashboard() {
             <td>${(d.total_consumption || 0).toFixed(3)} L</td>
             <td>${(d.water_loss || 0).toFixed(2)} L</td>
             <td><span class="valve-status">${valveIcon} ${valveLabel}</span></td>
-            <td>
+            <td class="control-buttons">
                 <button class="${valveBtnClass}" data-device="${d.device_id}" data-action="${valveOpen ? 'VALVE_CLOSE' : 'VALVE_OPEN'}">
                     ${valveBtnText}
                 </button>
+                ${resetBtn}
             </td>
         `;
 
-        // Click row (excluding button) to open detail panel
+        // Click row (excluding buttons) to open detail panel
         row.addEventListener('click', (e) => {
-            if (!e.target.closest('.valve-btn')) {
+            if (!e.target.closest('.valve-btn') && !e.target.closest('.valve-reset')) {
                 openDetailPanel(d.device_id);
             }
         });
 
-        // Valve button click
-        const btn = row.querySelector('.valve-btn');
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            sendCommand(d.device_id, btn.dataset.action);
+        // Control button clicks
+        row.querySelectorAll('.valve-btn, .valve-reset').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                sendCommand(d.device_id, btn.dataset.action);
+            });
         });
 
         deviceTableBody.appendChild(row);
@@ -276,17 +296,34 @@ function updateDetailPanel(device) {
     const valveSection = document.getElementById('detail-valve-section');
     if (valveSection) {
         const valveOpen = device.valve_open !== false;
+        const cmd = valveOpen ? 'VALVE_CLOSE' : 'VALVE_OPEN';
+        const resetBtnHtml = device.leak_status
+            ? `<button class="valve-btn-large valve-reset-large" id="detail-reset-btn">🔄 Reset Leak Alarm</button>`
+            : '';
         valveSection.innerHTML = `
             <div class="detail-valve">
                 <span class="valve-indicator ${valveOpen ? 'open' : 'closed'}">
                     ${valveOpen ? '🟢 Valve Open' : '🔴 Valve Closed'}
                 </span>
-                <button class="valve-btn-large ${valveOpen ? 'valve-close' : 'valve-open'}"
-                        onclick="sendCommand('${device.device_id}', '${valveOpen ? 'VALVE_CLOSE' : 'VALVE_OPEN'}')">
-                    ${valveOpen ? '🛑 Shut Off Valve' : '✅ Reopen Valve'}
-                </button>
+                <div class="detail-valve-buttons">
+                    <button class="valve-btn-large ${valveOpen ? 'valve-close' : 'valve-open'}"
+                            id="detail-valve-btn">
+                        ${valveOpen ? '🛑 Shut Off Valve' : '✅ Reopen Valve'}
+                    </button>
+                    ${resetBtnHtml}
+                </div>
             </div>
         `;
+        const safeId = device.device_id;
+        valveSection.querySelector('#detail-valve-btn').addEventListener('click', () => {
+            sendCommand(safeId, cmd);
+        });
+        const resetBtn = valveSection.querySelector('#detail-reset-btn');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                sendCommand(safeId, 'RESET_LEAK');
+            });
+        }
     }
 }
 

@@ -415,6 +415,23 @@ tr.empty-row td {
     box-shadow: 0 0 12px rgba(34, 197, 94, 0.2);
 }
 
+.valve-btn.valve-reset {
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--accent-amber);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.valve-btn.valve-reset:hover {
+    background: rgba(245, 158, 11, 0.3);
+    box-shadow: 0 0 12px rgba(245, 158, 11, 0.2);
+}
+
+.control-buttons {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
 /* Detail panel valve control */
 .detail-valve-section {
     margin-bottom: 24px;
@@ -472,6 +489,22 @@ tr.empty-row td {
 .valve-btn-large.valve-open:hover {
     box-shadow: 0 4px 20px rgba(34, 197, 94, 0.4);
     transform: translateY(-1px);
+}
+
+.valve-btn-large.valve-reset-large {
+    background: linear-gradient(135deg, #d97706, #b45309);
+    color: white;
+}
+
+.valve-btn-large.valve-reset-large:hover {
+    box-shadow: 0 4px 20px rgba(245, 158, 11, 0.4);
+    transform: translateY(-1px);
+}
+
+.detail-valve-buttons {
+    display: flex;
+    gap: 8px;
+    align-items: center;
 }
 
 
