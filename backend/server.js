@@ -26,6 +26,7 @@ const MAX_HISTORY = 500; // per device
 const ANOMALY_MULTIPLIER = 2.5;   // flag if flow > 2.5x the baseline for that hour
 const ANOMALY_MIN_FLOW = 0.5;     // ignore anomalies below this flow rate
 const BASELINE_MIN_SAMPLES = 5;   // need at least N samples before baseline is trusted
+const BASELINE_MAX_SAMPLES = 500; // cap samples per slot — older data decays via EMA blending
 
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
@@ -109,7 +110,7 @@ function saveBaselines() {
 
 const deviceBaselines = loadBaselines();
 
-// Update baseline with a new flow reading
+// Update baseline with a new flow reading (with exponential decay)
 function updateBaseline(deviceId, flowRate) {
     if (!deviceBaselines[deviceId]) {
         deviceBaselines[deviceId] = {};
@@ -118,8 +119,14 @@ function updateBaseline(deviceId, flowRate) {
     if (!deviceBaselines[deviceId][hour]) {
         deviceBaselines[deviceId][hour] = { sum: 0, count: 0 };
     }
-    deviceBaselines[deviceId][hour].sum += flowRate;
-    deviceBaselines[deviceId][hour].count += 1;
+    const slot = deviceBaselines[deviceId][hour];
+    if (slot.count >= BASELINE_MAX_SAMPLES) {
+        // Decay: blend toward recent data by halving the accumulated stats
+        slot.sum = slot.sum / 2;
+        slot.count = Math.floor(slot.count / 2);
+    }
+    slot.sum += flowRate;
+    slot.count += 1;
     saveBaselines();
 }
 
@@ -323,6 +330,9 @@ app.post('/api/data', (req, res) => {
     }
     if (anomaly && !(previousState && previousState.anomaly)) {
         logEvent(device_id, 'anomaly', `Anomaly: ${anomaly.ratio}x baseline`, { flow_rate: deviceData.flow_rate, ratio: anomaly.ratio });
+    }
+    if (!anomaly && previousState && previousState.anomaly) {
+        logEvent(device_id, 'anomaly_resolved', 'Anomaly resolved — flow returned to normal');
     }
 
     // Store/Update device state
@@ -729,7 +739,7 @@ app.post('/api/demo/simulate-leak', (req, res) => {
         leak_status: true,
         leak_type,
         water_loss: (prevState ? prevState.water_loss || 0 : 0) + flowRate * (2 / 60),
-        valve_open: leak_type === 'closed_valve' ? false : true,
+        valve_open: false,
         last_seen: new Date().toISOString(),
         run_start: prevState && prevState.run_start ? prevState.run_start : new Date().toISOString(),
         anomaly: null

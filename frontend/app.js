@@ -69,7 +69,8 @@ const EVENT_CONFIG = {
     leak_reset:    { icon: '🔄', cls: 'ev-neutral', label: 'Leak Reset' },
     flow_started:  { icon: '💧', cls: 'ev-info',    label: 'Flow Started' },
     flow_stopped:  { icon: '⏸',  cls: 'ev-neutral', label: 'Flow Stopped' },
-    anomaly:       { icon: '📊', cls: 'ev-warning', label: 'Anomaly' }
+    anomaly:          { icon: '📊', cls: 'ev-warning', label: 'Anomaly' },
+    anomaly_resolved: { icon: '✅', cls: 'ev-success', label: 'Anomaly Resolved' }
 };
 
 // Leak type display config
